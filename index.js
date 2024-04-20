@@ -1,12 +1,17 @@
 const express = require("express");
 const cors = require("cors");
+const morgan = require("morgan");
+const jwt = require("jsonwebtoken");
 const app = express();
 require("dotenv").config();
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const stripe = require("stripe")(`${process.env.PAYMENT_SECRET_KEY}`);
+
 // middleware
 app.use(cors());
 app.use(express.json());
+app.use(morgan("dev"));
 
 const uri = `mongodb+srv://${process.env.SECRET_NAME}:${process.env.SECRET_KEY}@cluster0.fgokub5.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -19,11 +24,55 @@ const client = new MongoClient(uri, {
   },
 });
 
+// generate stripe
+
+// generate jwt token
+const verifyJWT = (req, res, next) => {
+  const authorization = req.headers.authorization;
+  if (!authorization) {
+    return res
+      .status(401)
+      .send({ error: true, message: "Unauthorized Access" });
+  }
+  const token = authorization.split(" ")[1];
+
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+    if (err) {
+      return res
+        .status(401)
+        .send({ error: true, message: "Unauthorized Access" });
+    }
+    req.decoded = decoded;
+    next();
+  });
+};
+
 async function run() {
   try {
     const userCollection = client.db("airbnbDb").collection("users");
     const roomsCollection = client.db("airbnbDb").collection("rooms");
     const bookingCollection = client.db("airbnbDb").collection("bookings");
+
+    app.post("/create-payment-intent", verifyJWT, async (req, res) => {
+      const { price } = req.body;
+      if (price) {
+        const amount = parseFloat(price) * 100;
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amount,
+          currency: "usd",
+          payment_method_types: ["card"],
+        });
+        res.send({ clientSecret: paymentIntent.client_secret });
+      }
+    });
+
+    app.post("/jwt", (req, res) => {
+      const email = req.body;
+      const token = jwt.sign(email, process.env.ACCESS_TOKEN_SECRET, {
+        expiresIn: "2d",
+      });
+      res.send({ token });
+    });
 
     // user role update
     app.put("/user/:email", async (req, res) => {
@@ -69,8 +118,14 @@ async function run() {
     });
 
     // get rooms for host
-    app.get("/rooms/:email", async (req, res) => {
+    app.get("/rooms/:email", verifyJWT, async (req, res) => {
+      const decodedEmail = req.decoded.email;
       const email = req.params.email;
+      if (email !== decodedEmail) {
+        return res
+          .status(403)
+          .send({ error: true, message: "Forbbiden Access" });
+      }
       const query = { "host.email": email };
       const result = await roomsCollection.find(query).toArray();
       res.send(result);
@@ -91,6 +146,17 @@ async function run() {
         res.send([]);
       }
       const query = { "guest.email": email };
+      const result = await bookingCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // get all bookings for host
+    app.get("/bookings/host", async (req, res) => {
+      const email = req.query.email;
+      if (!email) {
+        res.send([]);
+      }
+      const query = { host: email };
       const result = await bookingCollection.find(query).toArray();
       res.send(result);
     });
