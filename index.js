@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 const app = express();
 require("dotenv").config();
 const port = process.env.PORT || 5000;
@@ -47,6 +48,32 @@ const verifyJWT = (req, res, next) => {
   });
 };
 
+// send mail using nodemoduler
+const sendMail = (emailData, emailAddress) => {
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: process.env.EMAIL,
+      pass: process.env.PASS,
+    },
+  });
+  const mailOptions = {
+    from: process.env.EMAIL,
+    to: emailAddress,
+    subject: emailData.subject,
+    html: `<p>${emailData?.message}</p>`,
+  };
+
+  transporter.sendMail(mailOptions, function (error, info) {
+    if (error) {
+      console.log(error);
+    } else {
+      console.log("Email sent: " + info.response);
+      // do something useful
+    }
+  });
+};
+
 async function run() {
   try {
     const userCollection = client.db("airbnbDb").collection("users");
@@ -75,7 +102,7 @@ async function run() {
     });
 
     // user role update
-    app.put("/user/:email", async (req, res) => {
+    app.put("/user/:email", verifyJWT, async (req, res) => {
       const email = req.params.email;
       const user = req.body;
       const query = { email: email };
@@ -89,14 +116,14 @@ async function run() {
     });
 
     // post a room to database
-    app.post("/rooms", async (req, res) => {
+    app.post("/rooms", verifyJWT, async (req, res) => {
       const body = req.body;
       const result = await roomsCollection.insertOne(body);
       res.send(result);
     });
 
     // get single room
-    app.get("/room/:id", async (req, res) => {
+    app.get("/room/:id", verifyJWT, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await roomsCollection.findOne(query);
@@ -104,7 +131,7 @@ async function run() {
     });
 
     // get user role
-    app.get("/user/:email", async (req, res) => {
+    app.get("/user/:email", verifyJWT, async (req, res) => {
       const email = req.params.email;
       const query = { email: email };
       const result = await userCollection.findOne(query);
@@ -112,7 +139,7 @@ async function run() {
     });
 
     // get all rooms from mongodb
-    app.get("/rooms", async (req, res) => {
+    app.get("/rooms", verifyJWT, async (req, res) => {
       const result = await roomsCollection.find().toArray();
       res.send(result);
     });
@@ -131,8 +158,25 @@ async function run() {
       res.send(result);
     });
 
+    // update room
+    app.put("/rooms/:id", verifyJWT, async (req, res) => {
+      const room = req.body;
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const options = { upsert: true };
+      const updateDoc = {
+        $set: room,
+      };
+      const result = await roomsCollection.updateOne(
+        filter,
+        updateDoc,
+        options
+      );
+      res.send(result);
+    });
+
     // delete a room for host
-    app.delete("/rooms/:id", async (req, res) => {
+    app.delete("/rooms/:id", verifyJWT, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await roomsCollection.deleteOne(query);
@@ -140,7 +184,7 @@ async function run() {
     });
 
     // get all bookings for guest
-    app.get("/bookings", async (req, res) => {
+    app.get("/bookings", verifyJWT, async (req, res) => {
       const email = req.query.email;
       if (!email) {
         res.send([]);
@@ -151,7 +195,7 @@ async function run() {
     });
 
     // get all bookings for host
-    app.get("/bookings/host", async (req, res) => {
+    app.get("/bookings/host", verifyJWT, async (req, res) => {
       const email = req.query.email;
       if (!email) {
         res.send([]);
@@ -162,14 +206,30 @@ async function run() {
     });
 
     // booking a room
-    app.post("/bookings", async (req, res) => {
-      const body = req.body;
-      const result = await bookingCollection.insertOne(body);
+    app.post("/bookings", verifyJWT, async (req, res) => {
+      const booking = req.body;
+      const result = await bookingCollection.insertOne(booking);
+      // send confirmation email to guest account
+      sendMail(
+        {
+          subject: "Booking Successful!",
+          message: `Booking Id: ${result.insertedId}, TransactionId: ${booking.transactionId} check your booking list`,
+        },
+        booking?.guest?.email
+      );
+      // send confrimation email to host account
+      sendMail(
+        {
+          subject: "Your Room Got Booked!",
+          message: `Booking Id: ${result.insertedId}, TransactionId: ${booking.transactionId} check your manage booking list`,
+        },
+        booking?.host
+      );
       res.send(result);
     });
 
     // delete a booking room
-    app.delete("/bookings/:id", async (req, res) => {
+    app.delete("/bookings/:id", verifyJWT, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await bookingCollection.deleteOne(query);
@@ -177,7 +237,7 @@ async function run() {
     });
 
     // upadate room booking status
-    app.patch("/rooms/status/:id", async (req, res) => {
+    app.patch("/rooms/status/:id", verifyJWT, async (req, res) => {
       const id = req.params.id;
       const status = req.body.status;
       const query = { _id: new ObjectId(id) };
